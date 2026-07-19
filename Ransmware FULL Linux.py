@@ -4,7 +4,7 @@ import sys
 import platform
 import tkinter as tk
 from tkinter import messagebox
-
+#red
 # ================== الإعدادات ==================
 KEY = "tHeD!wAsHere"
 SCRIPT_NAME = "system_helper.py"
